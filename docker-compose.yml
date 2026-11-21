@@ -6,6 +6,7 @@ services:
     # Single-binary Temporal server (SQLite persisted to a volume) with the Web UI built in.
     command: ["server", "start-dev", "--ip", "0.0.0.0", "--ui-port", "8080", "--db-filename", "/data/temporal.db"]
     user: root
+    restart: unless-stopped
     ports:
       - "7233:7233"   # gRPC frontend
       - "8080:8080"   # Temporal Web UI
@@ -20,6 +21,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     ports:
       - "${REDIS_PORT:-6379}:6379"
     healthcheck:

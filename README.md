@@ -10,6 +10,7 @@ Aggregates overlapping hotel offers from two (mock) suppliers, deduplicates hote
 
 - [Architecture](#architecture)
 - [Quick start (Docker)](#quick-start-docker)
+- [Deploying to a server](#deploying-to-a-server)
 - [Running locally without Docker](#running-locally-without-docker)
 - [API reference](#api-reference)
 - [How it works](#how-it-works)
@@ -62,7 +63,7 @@ The API and worker are built from the **same Docker image** and differ only in t
 **Prerequisites:** Docker with Docker Compose v2.
 
 ```bash
-git clone <your-repo-url> hotel-offer-orchestrator
+git clone https://github.com/Shreyashsalv2/hotel-offer-orchestrator.git
 cd hotel-offer-orchestrator
 docker compose up --build -d
 ```
@@ -91,6 +92,28 @@ docker compose logs -f api worker
 docker compose down          # stop
 docker compose down -v       # stop and delete Temporal data volume
 ```
+
+---
+
+## Deploying to a server
+
+The same Compose stack runs on any Linux server or cloud VM with Docker installed, for example AWS EC2, GCP Compute Engine, Azure VM or DigitalOcean.
+
+```bash
+# on the server
+git clone https://github.com/Shreyashsalv2/hotel-offer-orchestrator.git
+cd hotel-offer-orchestrator
+docker compose up --build -d
+docker compose ps                     # wait until api, redis and temporal are healthy
+curl http://localhost:3000/health
+```
+
+- Open port **3000** (API) in the firewall or security group. Keep **7233** (Temporal), **6379** (Redis) and **8080** (Temporal UI) private, or reach them over an SSH tunnel: `ssh -L 8080:localhost:8080 user@server`.
+- All services use `restart: unless-stopped`, so the stack comes back after a crash or a server reboot. Use `/health` to monitor it (it also checks that the worker is running).
+- Override settings with environment variables or a `.env` file next to `docker-compose.yml` (see [Configuration](#configuration)).
+- Update to a new version: `git pull && docker compose up --build -d`.
+
+**Production notes:** run Temporal as a cluster backed by PostgreSQL, or use Temporal Cloud. Use a managed Redis service. Put the API behind a reverse proxy with TLS. Scale workers with `docker compose up -d --scale worker=3`.
 
 ---
 
