@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hotel Offer Orchestrator — Demo</title>
+  <style>
+    :root {
+      --bg: #f5f7fb; --card: #fff; --text: #1d2433; --muted: #6b7385; --border: #e3e7ef;
+      --brand: #2457d6; --ok: #1f9d55; --warn: #c98a00; --bad: #d64545;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
+    header { background: var(--brand); color: #fff; padding: 20px 24px 64px; }
+    header h1 { margin: 0; font-size: 22px; }
+    header p { margin: 4px 0 0; opacity: .85; font-size: 14px; }
+    main { max-width: 960px; margin: -44px auto 40px; padding: 0 16px; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 4px 16px rgba(20, 30, 60, .06); }
+    form { display: grid; grid-template-columns: 2fr 1fr 1fr auto; gap: 12px; padding: 16px; align-items: end; }
+    label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+    input { font: inherit; font-size: 15px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); }
+    input:focus { outline: 2px solid var(--brand); outline-offset: -1px; }
+    button { font: inherit; font-weight: 600; padding: 11px 20px; border: 0; border-radius: 8px; background: var(--brand); color: #fff; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: progress; }
+    .health { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; font-size: 13px; }
+    .pill { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px; background: var(--card); border: 1px solid var(--border); }
+    .pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+    .pill.up::before { background: var(--ok); } .pill.down::before { background: var(--bad); }
+    .pill button { padding: 2px 8px; font-size: 12px; background: transparent; color: var(--brand); border: 1px solid var(--border); }
+    .notice { padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; font-size: 14px; }
+    .notice.warn { background: #fff7e0; color: #7a5600; } .notice.error { background: #fdecec; color: #8a1f1f; }
+    .meta { color: var(--muted); font-size: 13px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 12px 16px; border-bottom: 1px solid var(--border); font-size: 14px; }
+    th { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    tr:last-child td { border-bottom: 0; }
+    .badge { margin-left: 8px; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: #e6f6ed; color: var(--ok); }
+    .empty { padding: 32px; text-align: center; color: var(--muted); }
+    footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 16px; }
+    footer a { color: var(--brand); }
+    @media (max-width: 640px) { form { grid-template-columns: 1fr 1fr; } form label:first-child, form button { grid-column: span 2; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Hotel Offer Orchestrator</h1>
+    <p>Best price per hotel across Supplier A and Supplier B, orchestrated with Temporal and filtered in Redis.</p>
+  </header>
+
+  <main>
+    <form id="search" class="card">
+      <label>City <input id="city" name="city" value="delhi" required placeholder="e.g. delhi, mumbai" /></label>
+      <label>Min price <input id="minPrice" name="minPrice" type="number" min="0" placeholder="Any" /></label>
+      <label>Max price <input id="maxPrice" name="maxPrice" type="number" min="0" placeholder="Any" /></label>
+      <button id="submit" type="submit">Search</button>
+    </form>
+
+    <div id="health" class="health" aria-live="polite"></div>
+    <div id="notice"></div>
+
+    <section class="card">
+      <div id="meta" class="meta">Enter a city and search.</div>
+      <div id="results"></div>
+    </section>
+
+    <footer>
+      Demo UI (optional). API: <code>GET /api/hotels?city=&amp;minPrice=&amp;maxPrice=</code> ·
+      <a href="/health" target="_blank">/health</a> ·
+      <a href="http://localhost:8080" target="_blank">Temporal UI</a>
+    </footer>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const inr = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
+
+    function el(tag, props = {}, children = []) {
+      const node = Object.assign(document.createElement(tag), props);
+      for (const c of [].concat(children)) node.append(c);
+      return node;
+    }
+
+    function showNotice(kind, text) {
+      $('notice').replaceChildren(text ? el('div', { className: `notice ${kind}`, textContent: text }) : '');
+    }
+
+    async function loadHealth() {
+      try {
+        const res = await fetch('/health');
+        const h = await res.json();
+        const pills = Object.entries(h.suppliers).map(([id, s]) => {
+          const down = s.status !== 'up';
+          const toggle = el('button', {
+            type: 'button',
+            textContent: down ? 'bring up' : 'take down',
+            title: 'Simulate an outage of this supplier',
+            onclick: async () => {
+              await fetch(`/${id}/toggle`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ down: !down }),
+              });
+              loadHealth();
+            },
+          });
+          const name = id === 'supplierA' ? 'Supplier A' : 'Supplier B';
+          return el('span', { className: `pill ${s.status}` }, [`${name}: ${s.status}`, toggle]);
+        });
+        const deps = Object.entries(h.dependencies).map(([name, d]) =>
+          el('span', { className: `pill ${d.status}`, textContent: `${name}: ${d.status}` }),
+        );
+        $('health').replaceChildren(el('span', { className: 'pill', textContent: `Overall: ${h.status}` }), ...pills, ...deps);
+      } catch {
+        $('health').replaceChildren(el('span', { className: 'pill down', textContent: 'Health check unavailable' }));
+      }
+    }
+
+    function renderResults(hotels, city) {
+      if (!hotels.length) {
+        $('results').replaceChildren(el('div', { className: 'empty', textContent: `No hotels found for “${city}”.` }));
+        return;
+      }
+      const cheapest = Math.min(...hotels.map((h) => h.price));
+      const rows = hotels.map((h) =>
+        el('tr', {}, [
+          el('td', {}, [h.name, ...(h.price === cheapest ? [el('span', { className: 'badge', textContent: 'Lowest price' })] : [])]),
+          el('td', { className: 'num', textContent: inr.format(h.price) }),
+          el('td', { textContent: h.supplier }),
+          el('td', { className: 'num', textContent: `${h.commissionPct}%` }),
+        ]),
+      );
+      const head = el('tr', {}, [
+        el('th', { textContent: 'Hotel' }),
+        el('th', { className: 'num', textContent: 'Price' }),
+        el('th', { textContent: 'Supplier' }),
+        el('th', { className: 'num', textContent: 'Commission' }),
+      ]);
+      $('results').replaceChildren(el('table', {}, [el('thead', {}, head), el('tbody', {}, rows)]));
+    }
+
+    $('search').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const params = new URLSearchParams();
+      for (const key of ['city', 'minPrice', 'maxPrice']) {
+        const v = $(key).value.trim();
+        if (v) params.set(key, v);
+      }
+      $('submit').disabled = true;
+      $('meta').textContent = 'Searching…';
+      showNotice();
+      const started = performance.now();
+      try {
+        const res = await fetch(`/api/hotels?${params}`);
+        const body = await res.json();
+        if (!res.ok) {
+          const details = Array.isArray(body.details) ? ' — ' + body.details.map((d) => d.message).join('; ') : '';
+          showNotice('error', `${body.error}${details}`);
+          $('results').replaceChildren();
+          $('meta').textContent = `Request failed (${res.status}).`;
+          return;
+        }
+        const failed = res.headers.get('X-Failed-Suppliers');
+        if (failed) showNotice('warn', `${failed} did not respond — showing results from the remaining supplier.`);
+        $('meta').textContent = `${body.length} hotel(s) in ${params.get('city')} · ${Math.round(performance.now() - started)} ms`;
+        renderResults(body, params.get('city'));
+      } catch (err) {
+        showNotice('error', 'Could not reach the API.');
+        $('meta').textContent = '';
+      } finally {
+        $('submit').disabled = false;
+        loadHealth();
+      }
+    });
+
+    loadHealth();
+  </script>
+</body>
+</html>
